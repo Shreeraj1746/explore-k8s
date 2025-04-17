@@ -1,0 +1,24 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: endpoint-stats
+spec:
+  template:
+    spec:
+      securityContext:
+        fsGroup: 999  # Default PostgreSQL group
+      containers:
+      - name: postgres
+        securityContext:
+          allowPrivilegeEscalation: false
+          runAsUser: 999  # Default PostgreSQL user
+          runAsNonRoot: true
+          capabilities:
+            drop:
+            - ALL
+            add:
+            - CHOWN
+            - FOWNER
+            - SETGID
+            - SETUID  # Minimum capabilities needed for PostgreSQL

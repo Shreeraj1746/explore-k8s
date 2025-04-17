@@ -1,0 +1,40 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flask-api
+  namespace: endpoint-stats
+spec:
+  template:
+    metadata:
+      annotations:
+        prometheus.io/scrape: "true"  # Enable Prometheus metrics scraping
+        prometheus.io/path: "/metrics"  # Path for metrics
+        prometheus.io/port: "9999"  # Port for metrics
+    spec:
+      serviceAccountName: endpoint-stats-sa  # Use the service account defined above
+      securityContext:
+        runAsNonRoot: true  # Don't run as root user
+        runAsUser: 1000     # Run as non-privileged user
+        fsGroup: 2000       # Set file system group for volume access
+      containers:
+      - name: flask-api
+        securityContext:
+          allowPrivilegeEscalation: false  # Prevent privilege escalation
+          readOnlyRootFilesystem: true  # Make root filesystem read-only
+          capabilities:
+            drop:
+            - ALL  # Drop all Linux capabilities
+          seccompProfile:
+            type: RuntimeDefault  # Use default seccomp profile
+        volumeMounts:
+        - name: tmp-volume  # Mount a writable volume for temporary files
+          mountPath: /tmp
+        - name: api-config  # Mount ConfigMap as read-only volume
+          mountPath: /app/config
+          readOnly: true
+      volumes:
+      - name: tmp-volume  # Define writable volume for temp files
+        emptyDir: {}
+      - name: api-config  # Define ConfigMap volume
+        configMap:
+          name: api-config

@@ -1,0 +1,19 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: endpoint-stats
+spec:
+  template:
+    spec:
+      securityContext:
+        fsGroup: 999  # Common non-root group
+      containers:
+      - name: redis
+        securityContext:
+          allowPrivilegeEscalation: false
+          runAsUser: 999  # Common non-root user
+          runAsNonRoot: true
+          capabilities:
+            drop:
+            - ALL  # Redis doesn't require special capabilities

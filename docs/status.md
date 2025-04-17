@@ -24,6 +24,7 @@ This document tracks the current status of the Kubernetes monitoring system impl
 | Prometheus | ✅ Deployed | Running on port 9090 with persistent storage |
 | AlertManager | ✅ Deployed | Running on port 9093 |
 | Grafana | ✅ Deployed | Running on port 3000 with Prometheus data source |
+| kube-state-metrics | ✅ Deployed | Running and exposing Kubernetes object metrics |
 
 ## 4. Configuration Resources
 
@@ -35,6 +36,7 @@ This document tracks the current status of the Kubernetes monitoring system impl
 | grafana-datasources | ✅ Created | ConfigMap with Prometheus data source |
 | flask-api-secret | ✅ Created | Secret for Flask API credentials |
 | prometheus-pvc | ✅ Created | PersistentVolumeClaim for Prometheus storage |
+| kube-state-metrics RBAC | ✅ Created | ClusterRole and ClusterRoleBinding for kube-state-metrics |
 
 ## 5. Alert Rules
 
@@ -50,6 +52,7 @@ This document tracks the current status of the Kubernetes monitoring system impl
 |--------|--------|---------|
 | Kubernetes Pod Annotations | ✅ Configured | Using `prometheus.io/*` annotations for auto-discovery |
 | Static Targets | ✅ Configured | Fallback configuration for Flask API |
+| ServiceMonitor | ✅ Configured | For kube-state-metrics, PostgreSQL, and Redis |
 
 ## 7. Application Metrics
 
@@ -59,6 +62,7 @@ This document tracks the current status of the Kubernetes monitoring system impl
 | Response Time Metrics | ❌ Missing | HTTP request duration metrics not implemented |
 | Status Code Metrics | ❌ Missing | Detailed status code metrics not implemented |
 | CPU/Memory Metrics | ✅ Available | Collected by Prometheus from Kubernetes |
+| Kubernetes State Metrics | ✅ Available | Node, pod, deployment, and other object metrics |
 
 ## 8. External Integrations
 
@@ -76,6 +80,7 @@ This document tracks the current status of the Kubernetes monitoring system impl
 | Grafana | ✅ ClusterIP | ❌ Not exposed (accessible via port-forward) |
 | PostgreSQL | ✅ ClusterIP | ❌ Not exposed |
 | Redis | ✅ ClusterIP | ❌ Not exposed |
+| kube-state-metrics | ✅ ClusterIP | ❌ Not exposed (accessible via port-forward) |
 
 ## 10. Missing Components/Improvements
 
@@ -94,6 +99,7 @@ graph TD
             Flask["Flask API<br/>Pods (2 replicas)<br/>Port: 9999<br/>Metrics: /metrics"]
             Postgres["PostgreSQL<br/>Database"]
             Redis["Redis<br/>Cache"]
+            KSM["kube-state-metrics<br/>Metrics for K8s objects"]
 
             subgraph "Monitoring Stack"
                 Prometheus["Prometheus<br/>Time Series DB<br/>Port: 9090"]
@@ -109,6 +115,10 @@ graph TD
             end
 
             Flask -- "exposes metrics" --> Prometheus
+            Postgres -- "exposes metrics via exporter" --> Prometheus
+            Redis -- "exposes metrics via exporter" --> Prometheus
+            KSM -- "exposes K8s object metrics" --> Prometheus
+
             Prometheus -- "stores metrics" --> PVC
             Prometheus -- "sends alerts" --> AlertManager
             Prometheus -- "data source" --> Grafana
@@ -132,4 +142,24 @@ graph TD
 
 ## Last Updated
 
-April 16, 2025
+April 17, 2025
+
+# Project Status
+
+## Current Progress
+- Added and deployed kube-state-metrics to monitor Kubernetes objects state and metrics
+
+## Completed Items
+- Created kube-state-metrics deployment with appropriate RBAC permissions
+- Configured ServiceMonitor for Prometheus to scrape kube-state-metrics
+- Set up resource limits and health probes for kube-state-metrics
+- Successfully tested metrics collection and verified Prometheus integration
+- Updated documentation to reflect the new component
+
+## To Do
+- Create Grafana dashboards for Kubernetes cluster monitoring
+- Implement network policies for kube-state-metrics
+- Consider setting up alerts for cluster state issues
+
+## Known Issues
+- None at the moment

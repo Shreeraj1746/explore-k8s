@@ -1,0 +1,28 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres-policy
+  namespace: endpoint-stats
+spec:
+  podSelector:
+    matchLabels:
+      app: postgres  # Match labels from Phase 1 PostgreSQL deployment
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - podSelector:  # Only allow Flask API to access PostgreSQL
+        matchLabels:
+          app: flask-api
+    ports:
+    - protocol: TCP
+      port: 5432  # Standard PostgreSQL port
+  - from:
+    - podSelector:  # Allow Prometheus to scrape PostgreSQL metrics
+        matchLabels:
+          app: prometheus
+    ports:
+    - protocol: TCP
+      port: 9187  # PostgreSQL metrics exporter port
+  egress: []  # No outbound connections needed for PostgreSQL

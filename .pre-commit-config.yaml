@@ -11,6 +11,7 @@ repos:
     -   id: check-json
     -   id: check-merge-conflict
     -   id: detect-private-key
+        exclude: ^certs/tls.key$
 
 -   repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.3.3

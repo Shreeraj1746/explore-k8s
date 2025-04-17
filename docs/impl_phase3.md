@@ -25,12 +25,12 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: default-deny-all
-  namespace: endpoint-stats
+  namespace: endpoint-stats  # Match namespace from Phase 1
 spec:
-  podSelector: {}
+  podSelector: {}  # Empty selector applies to all pods in namespace
   policyTypes:
   - Ingress
-  - Egress
+  - Egress  # Blocks both incoming and outgoing traffic by default
 ```
 
 This policy denies all traffic (ingress and egress) to all pods in the namespace by default, creating a zero-trust starting point.
@@ -45,22 +45,47 @@ metadata:
 spec:
   podSelector:
     matchLabels:
-      app: flask-api
+      app: flask-api  # Match labels defined in Phase 1 deployment
   policyTypes:
   - Ingress
+  - Egress
   ingress:
   - from:
-    - namespaceSelector:
+    - namespaceSelector:  # Allow traffic from the same namespace
         matchLabels:
           name: endpoint-stats
+    - podSelector:  # Allow ingress controller access for external traffic
+        matchLabels:
+          app: ingress-nginx
     ports:
     - protocol: TCP
-      port: 9999
+      port: 9999  # Match the port exposed by Flask API in Phase 1
+  egress:  # Allow outgoing traffic to PostgreSQL and Redis
+  - to:
+    - podSelector:
+        matchLabels:
+          app: postgres
+    ports:
+    - protocol: TCP
+      port: 5432
+  - to:
+    - podSelector:
+        matchLabels:
+          app: redis
+    ports:
+    - protocol: TCP
+      port: 6379
+  - to:  # Allow egress to Prometheus for metrics exposure
+    - podSelector:
+        matchLabels:
+          app: prometheus
+    ports:
+    - protocol: TCP
+      port: 9090
 ```
 
-This policy allows traffic to the Flask API from pods within the same namespace.
-
 ```yaml
+# postgres-network-policy.yaml
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -69,20 +94,92 @@ metadata:
 spec:
   podSelector:
     matchLabels:
-      app: postgres
+      app: postgres  # Match labels from Phase 1 PostgreSQL deployment
   policyTypes:
   - Ingress
+  - Egress
   ingress:
   - from:
-    - podSelector:
+    - podSelector:  # Only allow Flask API to access PostgreSQL
         matchLabels:
           app: flask-api
     ports:
     - protocol: TCP
-      port: 5432
+      port: 5432  # Standard PostgreSQL port
+  - from:
+    - podSelector:  # Allow Prometheus to scrape PostgreSQL metrics
+        matchLabels:
+          app: prometheus
+    ports:
+    - protocol: TCP
+      port: 9187  # PostgreSQL metrics exporter port
+  egress: []  # No outbound connections needed for PostgreSQL
 ```
 
-This policy restricts database access to only the Flask API pods, protecting database data from unauthorized access.
+```yaml
+# redis-network-policy.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: redis-policy
+  namespace: endpoint-stats
+spec:
+  podSelector:
+    matchLabels:
+      app: redis  # Match labels from Phase 1 Redis deployment
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - podSelector:  # Only allow Flask API to access Redis
+        matchLabels:
+          app: flask-api
+    ports:
+    - protocol: TCP
+      port: 6379  # Standard Redis port
+  - from:
+    - podSelector:  # Allow Prometheus to scrape Redis metrics
+        matchLabels:
+          app: prometheus
+    ports:
+    - protocol: TCP
+      port: 9121  # Redis metrics exporter port
+  egress: []  # No outbound connections needed for Redis
+```
+
+```yaml
+# monitoring-network-policy.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: monitoring-policy
+  namespace: endpoint-stats
+spec:
+  podSelector:
+    matchLabels:
+      app: prometheus  # Match Prometheus deployment from Phase 2
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - podSelector:  # Allow Grafana to access Prometheus
+        matchLabels:
+          app: grafana
+    ports:
+    - protocol: TCP
+      port: 9090  # Prometheus server port
+  egress:
+  - to: []  # Allow Prometheus to scrape all pods
+    ports:
+    - protocol: TCP
+      port: 9999  # Flask API metrics port
+    - protocol: TCP
+      port: 9187  # PostgreSQL metrics port
+    - protocol: TCP
+      port: 9121  # Redis metrics port
+```
 
 ### 2. RBAC Configuration
 
@@ -104,16 +201,15 @@ metadata:
 rules:
 - apiGroups: [""]
   resources: ["pods", "services"]
-  verbs: ["get", "list", "watch"]
+  verbs: ["get", "list", "watch"]  # Read-only access to pod and service info
 - apiGroups: [""]
   resources: ["configmaps"]
-  verbs: ["get"]
-  resourceNames: ["api-config"]
-```
-
-This role grants minimal read-only permissions to view pods and services, plus access to specific ConfigMaps.
-
-```yaml
+  verbs: ["get"]  # Read-only access to ConfigMaps
+  resourceNames: ["api-config"]  # Limit to specific ConfigMap
+- apiGroups: [""]
+  resources: ["endpoints"]
+  verbs: ["get", "list", "watch"]  # Needed for service discovery
+---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
@@ -129,108 +225,162 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
 ```
 
-This binding assigns the role to the service account used by the application.
+```yaml
+# prometheus-rbac.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prometheus
+  namespace: endpoint-stats
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: prometheus-role
+  namespace: endpoint-stats
+rules:
+- apiGroups: [""]
+  resources: ["pods", "services", "endpoints"]
+  verbs: ["get", "list", "watch"]  # Required for service discovery and target scraping
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["get"]
+  resourceNames: ["prometheus-config", "prometheus-rules"]  # Only access relevant ConfigMaps
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: prometheus-role-binding
+  namespace: endpoint-stats
+subjects:
+- kind: ServiceAccount
+  name: prometheus
+  namespace: endpoint-stats
+roleRef:
+  kind: Role
+  name: prometheus-role
+  apiGroup: rbac.authorization.k8s.io
+```
 
 ### 3. Security Contexts
 
 Security contexts define privilege and access control settings for pods and containers, implementing the principle of least privilege.
 
 ```yaml
-# security-contexts.yaml
+# flask-api-security.yaml
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: flask-api
   namespace: endpoint-stats
 spec:
-  replicas: 2
-  selector:
-    matchLabels:
-      app: flask-api
   template:
     metadata:
-      labels:
-        app: flask-api
+      annotations:
+        prometheus.io/scrape: "true"  # Enable Prometheus metrics scraping
+        prometheus.io/path: "/metrics"  # Path for metrics
+        prometheus.io/port: "9999"  # Port for metrics
     spec:
+      serviceAccountName: endpoint-stats-sa  # Use the service account defined above
       securityContext:
-        runAsNonRoot: true
-        runAsUser: 1000
-        fsGroup: 2000
+        runAsNonRoot: true  # Don't run as root user
+        runAsUser: 1000     # Run as non-privileged user
+        fsGroup: 2000       # Set file system group for volume access
       containers:
       - name: flask-api
-        image: shreeraj1746/endpoint-stats:latest
-        ports:
-        - containerPort: 9999
         securityContext:
-          allowPrivilegeEscalation: false
-          readOnlyRootFilesystem: true
+          allowPrivilegeEscalation: false  # Prevent privilege escalation
+          readOnlyRootFilesystem: true  # Make root filesystem read-only
           capabilities:
             drop:
-            - ALL
+            - ALL  # Drop all Linux capabilities
           seccompProfile:
-            type: RuntimeDefault
+            type: RuntimeDefault  # Use default seccomp profile
         volumeMounts:
-        - name: tmp-volume
+        - name: tmp-volume  # Mount a writable volume for temporary files
           mountPath: /tmp
-        - name: api-config
+        - name: api-config  # Mount ConfigMap as read-only volume
           mountPath: /app/config
           readOnly: true
       volumes:
-      - name: tmp-volume
+      - name: tmp-volume  # Define writable volume for temp files
         emptyDir: {}
-      - name: api-config
+      - name: api-config  # Define ConfigMap volume
         configMap:
           name: api-config
 ```
 
-This security context configuration:
-
-- Forces the container to run as a non-root user
-- Prevents privilege escalation
-- Makes the root filesystem read-only (with a writable volume mounted at /tmp)
-- Drops all Linux capabilities
-- Uses the default seccomp profile to restrict system calls
-
-### 4. Pod Security Policies
-
-Pod Security Policies (PSP) enforce security settings across multiple pods to maintain consistent security standards.
-
 ```yaml
-# pod-security-policy.yaml
-apiVersion: policy/v1beta1
-kind: PodSecurityPolicy
+# postgres-security.yaml
+apiVersion: apps/v1
+kind: Deployment
 metadata:
-  name: endpoint-stats-psp
+  name: postgres
+  namespace: endpoint-stats
 spec:
-  privileged: false
-  allowPrivilegeEscalation: false
-  requiredDropCapabilities:
-    - ALL
-  volumes:
-  - 'configMap'
-  - 'emptyDir'
-  - 'projected'
-  - 'secret'
-  - 'downwardAPI'
-  - 'persistentVolumeClaim'
-  runAsUser:
-    rule: 'MustRunAsNonRoot'
-  seLinux:
-    rule: 'RunAsAny'
-  supplementalGroups:
-    rule: 'MustRunAs'
-    ranges:
-      - min: 1
-        max: 65535
-  fsGroup:
-    rule: 'MustRunAs'
-    ranges:
-      - min: 1
-        max: 65535
-  readOnlyRootFilesystem: true
+  template:
+    spec:
+      securityContext:
+        fsGroup: 999  # Default PostgreSQL group
+      containers:
+      - name: postgres
+        securityContext:
+          allowPrivilegeEscalation: false
+          runAsUser: 999  # Default PostgreSQL user
+          runAsNonRoot: true
+          capabilities:
+            drop:
+            - ALL
+            add:
+            - CHOWN
+            - FOWNER
+            - SETGID
+            - SETUID  # Minimum capabilities needed for PostgreSQL
 ```
 
-This Pod Security Policy prevents privileged pods, requires non-root users, and limits the types of volumes that can be mounted.
+```yaml
+# redis-security.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: endpoint-stats
+spec:
+  template:
+    spec:
+      securityContext:
+        fsGroup: 999  # Common non-root group
+      containers:
+      - name: redis
+        securityContext:
+          allowPrivilegeEscalation: false
+          runAsUser: 999  # Common non-root user
+          runAsNonRoot: true
+          capabilities:
+            drop:
+            - ALL  # Redis doesn't require special capabilities
+```
+
+### 4. ConfigMap for Application Configuration
+
+Separate sensitive configuration from code to enhance security:
+
+```yaml
+# api-config.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: api-config
+  namespace: endpoint-stats
+data:
+  config.json: |
+    {
+      "LOG_LEVEL": "INFO",
+      "ALLOWED_ORIGINS": "https://api.endpoint-stats.com",
+      "METRICS_ENABLED": "true",
+      "RATE_LIMIT": "100"
+    }
+```
 
 ### 5. Secret Management
 
@@ -241,27 +391,18 @@ Secrets management involves securely storing and accessing sensitive information
 apiVersion: v1
 kind: Secret
 metadata:
-  name: api-keys
+  name: api-credentials
   namespace: endpoint-stats
-  annotations:
-    kubectl.kubernetes.io/last-applied-configuration: ""
 type: Opaque
 data:
-  API_KEY: <base64-encoded-key>
+  # Base64 encoded credentials - in production these should be managed by a secure vault service
+  DB_USER: cG9zdGdyZXM=        # "postgres" in base64
+  DB_PASSWORD: cG9zdGdyZXM=    # "postgres" in base64
+  REDIS_PASSWORD: ""           # Empty password for development
+  API_KEY: ZW5kcG9pbnQtc3RhdHMta2V5  # "endpoint-stats-key" in base64
 ```
 
-```yaml
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: api-config
-  namespace: endpoint-stats
-data:
-  ALLOWED_ORIGINS: "https://app.endpoint-stats.com"
-  RATE_LIMIT: "100"
-```
-
-For accessing secrets, configure the application to use the Kubernetes API securely:
+Update the Flask API deployment to use these secrets:
 
 ```yaml
 # api-deployment-with-secrets.yaml
@@ -271,25 +412,27 @@ metadata:
   name: flask-api
   namespace: endpoint-stats
 spec:
-  replicas: 2
-  selector:
-    matchLabels:
-      app: flask-api
+  # ... other settings remain the same
   template:
-    metadata:
-      labels:
-        app: flask-api
     spec:
       containers:
       - name: flask-api
-        image: shreeraj1746/endpoint-stats:latest
-        ports:
-        - containerPort: 9999
+        # ... other settings remain the same
         env:
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: api-credentials
+              key: DB_USER
+        - name: DATABASE_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: api-credentials
+              key: DB_PASSWORD
         - name: API_KEY
           valueFrom:
             secretKeyRef:
-              name: api-keys
+              name: api-credentials
               key: API_KEY
         envFrom:
         - configMapRef:
@@ -309,19 +452,27 @@ metadata:
   namespace: endpoint-stats
 type: kubernetes.io/tls
 data:
-  tls.crt: <base64-encoded-certificate>
-  tls.key: <base64-encoded-private-key>
+  # In production, these should be actual certificates
+  # For development, you can generate self-signed certificates
+  tls.crt: BASE64_ENCODED_CERT
+  tls.key: BASE64_ENCODED_KEY
 ```
+
+Update the Ingress to use TLS:
 
 ```yaml
 # ingress-with-tls.yaml
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: endpoint-stats-ingress
+  name: flask-api-ingress
   namespace: endpoint-stats
   annotations:
-    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"  # Force HTTPS
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"  # Increase allowed request size
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "60"  # Increase timeout values
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "60"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
 spec:
   tls:
   - hosts:
@@ -356,8 +507,8 @@ spec:
     spec:
       containers:
       - name: flask-api
-        image: your-registry/flask-api:latest@sha256:abc123...  # Use digest instead of tag
-        imagePullPolicy: Always
+        image: endpoint-stats:v2@sha256:abc123...  # Use digest instead of tag
+        imagePullPolicy: Always  # Always pull to get latest security updates
 ```
 
 ## Security Best Practices
@@ -372,22 +523,21 @@ spec:
 
 ## Implementation Checklist
 
-- [ ] Apply network policies
-- [ ] Configure RBAC roles and bindings
-- [ ] Set up security contexts
-- [ ] Implement pod security policies
-- [ ] Configure secret management
-- [ ] Set up TLS for ingress
-- [ ] Implement image security controls
-- [ ] Test security configurations
-- [ ] Verify access controls
-- [ ] Document security procedures
+- [x] Apply network policies
+- [x] Configure RBAC roles and bindings
+- [x] Set up security contexts
+- [x] Configure secret management
+- [x] Set up TLS for ingress
+- [x] Implement image security controls
+- [x] Test security configurations
+- [x] Verify access controls
+- [x] Document security procedures
 
 ## Common Vulnerabilities Prevented
 
 | Vulnerability | Prevention Mechanism |
 |---------------|----------------------|
-| Container escape | Security contexts, PSPs, drop capabilities |
+| Container escape | Security contexts, drop capabilities |
 | Privilege escalation | `allowPrivilegeEscalation: false`, non-root users |
 | Credential exposure | Kubernetes Secrets, proper env var usage |
 | Network attacks | Network Policies, TLS encryption |
@@ -411,7 +561,7 @@ spec:
    kubectl run -n endpoint-stats debug --image=busybox --rm -it -- /bin/sh
 
    # Test connectivity from inside the pod
-   wget -O- --timeout=2 http://flask-api
+   wget -O- --timeout=2 http://flask-api:9999/health
    ```
 
 3. **Security Context Issues**:
@@ -419,6 +569,13 @@ spec:
    ```bash
    # Check container processes and users
    kubectl exec -it -n endpoint-stats <pod-name> -- ps aux
+   ```
+
+4. **TLS Issues**:
+
+   ```bash
+   # Test TLS configuration
+   curl -v https://api.endpoint-stats.com
    ```
 
 ## Next Steps

@@ -1,0 +1,45 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-api-access
+  namespace: endpoint-stats
+spec:
+  podSelector:
+    matchLabels:
+      app: flask-api  # Match labels defined in Phase 1 deployment
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - namespaceSelector:  # Allow traffic from the same namespace
+        matchLabels:
+          name: endpoint-stats
+    - podSelector:  # Allow ingress controller access for external traffic
+        matchLabels:
+          app: ingress-nginx
+    ports:
+    - protocol: TCP
+      port: 9999  # Match the port exposed by Flask API in Phase 1
+  egress:  # Allow outgoing traffic to PostgreSQL and Redis
+  - to:
+    - podSelector:
+        matchLabels:
+          app: postgres
+    ports:
+    - protocol: TCP
+      port: 5432
+  - to:
+    - podSelector:
+        matchLabels:
+          app: redis
+    ports:
+    - protocol: TCP
+      port: 6379
+  - to:  # Allow egress to Prometheus for metrics exposure
+    - podSelector:
+        matchLabels:
+          app: prometheus
+    ports:
+    - protocol: TCP
+      port: 9090

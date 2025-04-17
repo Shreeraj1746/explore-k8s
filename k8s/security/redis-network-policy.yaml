@@ -1,0 +1,28 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: redis-policy
+  namespace: endpoint-stats
+spec:
+  podSelector:
+    matchLabels:
+      app: redis  # Match labels from Phase 1 Redis deployment
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - podSelector:  # Only allow Flask API to access Redis
+        matchLabels:
+          app: flask-api
+    ports:
+    - protocol: TCP
+      port: 6379  # Standard Redis port
+  - from:
+    - podSelector:  # Allow Prometheus to scrape Redis metrics
+        matchLabels:
+          app: prometheus
+    ports:
+    - protocol: TCP
+      port: 9121  # Redis metrics exporter port
+  egress: []  # No outbound connections needed for Redis
